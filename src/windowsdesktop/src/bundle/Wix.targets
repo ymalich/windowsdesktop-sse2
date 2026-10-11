@@ -3,7 +3,7 @@
 
   <Target Name="CollectRuntimePrereqDependencies">
     <PropertyGroup>
-      <RuntimePrereqDownloadDirectory>$(BaseIntermediateOutputPath)runtime-prereqs\$(TargetArchitecture)\</RuntimePrereqDownloadDirectory>
+      <RuntimePrereqDownloadDirectory Condition="'$(RuntimePrereqDownloadDirectory)' == ''">$(BaseIntermediateOutputPath)runtime-prereqs\$(TargetArchitecture)\</RuntimePrereqDownloadDirectory>
     </PropertyGroup>
 
     <ItemGroup>
@@ -47,7 +47,10 @@
       <UrisToDownload Include="@(RemoteAssetBaseURL->'%(Identity)Runtime/$(MicrosoftNETCorePlatformsVersion)/$(_CurrentRemoteAsset)')" />
     </ItemGroup>
 
-    <Microsoft.DotNet.Arcade.Sdk.DownloadFile Uris="@(UrisToDownload)" DestinationPath="$(_CurrentDestination)" />
+    <Microsoft.DotNet.Arcade.Sdk.DownloadFile
+      Condition="'$(UseLocalRuntimePrereqs)' != 'true'"
+      Uris="@(UrisToDownload)"
+      DestinationPath="$(_CurrentDestination)" />
   </Target>
 
   <Target Name="SetInstallerInfo" BeforeTargets="BeforeBuild" DependsOnTargets="FetchRuntimePrereqDependencies">
