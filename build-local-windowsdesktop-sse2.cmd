@@ -5,18 +5,41 @@ set "MSBUILDDISABLENODEREUSE=1"
 rem Build a custom Windows Desktop Runtime bundle that carries the SSE2 CoreCLR.
 rem Run this script from the windowsdesktop checkout and pass the custom runtime
 rem repository path as the first argument.
+rem Usage: build-local-windowsdesktop-sse2.cmd <runtime-repository-path> [x64|x86]
+rem        (architecture defaults to x64)
 
 set "WINDOWSDESKTOP_ROOT=%~dp0"
 set "RUNTIME_ROOT=%~1"
+rem Also accept the architecture as the only argument, so a mistyped call still
+rem reports the missing runtime path instead of a bogus directory.
+if /i "%~1"=="x64" (
+    set "RUNTIME_ROOT="
+    set "ARCHITECTURE=%~1"
+)
+if /i "%~1"=="x86" (
+    set "RUNTIME_ROOT="
+    set "ARCHITECTURE=%~1"
+)
 if not defined RUNTIME_ROOT (
-    echo Usage: %~nx0 ^<runtime-repository-path^>
-    echo Example: %~nx0 T:\Git\runtime-11-sse2
+    echo Usage: %~nx0 ^<runtime-repository-path^> [x64^|x86]
+    echo Example: %~nx0 T:\Git\runtime-11-sse2 x86
     exit /b 2
 )
 if not "%RUNTIME_ROOT:~-1%"=="\" set "RUNTIME_ROOT=%RUNTIME_ROOT%\"
+rem Second argument wins, otherwise honor an ARCHITECTURE env var, otherwise default to x64.
+if not "%~2"=="" set "ARCHITECTURE=%~2"
+if not defined ARCHITECTURE set "ARCHITECTURE=x64"
+if /i not "%ARCHITECTURE%"=="x64" if /i not "%ARCHITECTURE%"=="x86" (
+    echo ERROR: Unsupported architecture "%ARCHITECTURE%". Supported values: x64, x86.
+    exit /b 2
+)
 set "CONFIGURATION=Release"
-set "ARCHITECTURE=x64"
-set "PACKAGE_VERSION=11.0.2-sse2"
+set "VERSION_SUFFIX=sse2"
+rem Derive the product version from eng\Versions.props so the script follows the
+rem checkout instead of carrying a hand-maintained copy of the version number.
+set "VERSIONS_PROPS=%WINDOWSDESKTOP_ROOT%eng\Versions.props"
+call :ReadProductVersion || exit /b 1
+set "PACKAGE_VERSION=%PRODUCT_VERSION%-%VERSION_SUFFIX%"
 set "LOCAL_FEED=%RUNTIME_ROOT%artifacts\packages\%CONFIGURATION%\Shipping"
 set "DESKTOP_SHIPPING=%WINDOWSDESKTOP_ROOT%artifacts\packages\%CONFIGURATION%\Shipping"
 set "DESKTOP_RUNTIME=%WINDOWSDESKTOP_ROOT%src\windowsdesktop\src\sfx\Microsoft.WindowsDesktop.App.Runtime.sfxproj"
@@ -38,10 +61,10 @@ if errorlevel 1 (
 )
 
 call :RequireRuntimeArtifact "Microsoft.NETCore.App.Ref.%PACKAGE_VERSION%.nupkg" || exit /b 1
-call :RequireRuntimeArtifact "Microsoft.NETCore.App.Crossgen2.win-x64.%PACKAGE_VERSION%.nupkg" || exit /b 1
-call :RequireRuntimeArtifact "dotnet-host-%PACKAGE_VERSION%-win-x64.msi" || exit /b 1
-call :RequireRuntimeArtifact "dotnet-hostfxr-%PACKAGE_VERSION%-win-x64.msi" || exit /b 1
-call :RequireRuntimeArtifact "dotnet-runtime-%PACKAGE_VERSION%-win-x64.msi" || exit /b 1
+call :RequireCrossgen2 || exit /b 1
+call :RequireRuntimeArtifact "dotnet-host-%PACKAGE_VERSION%-win-%ARCHITECTURE%.msi" || exit /b 1
+call :RequireRuntimeArtifact "dotnet-hostfxr-%PACKAGE_VERSION%-win-%ARCHITECTURE%.msi" || exit /b 1
+call :RequireRuntimeArtifact "dotnet-runtime-%PACKAGE_VERSION%-win-%ARCHITECTURE%.msi" || exit /b 1
 
 echo Windows Desktop root : %WINDOWSDESKTOP_ROOT%
 echo Custom runtime feed  : %LOCAL_FEED%
@@ -64,7 +87,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%WINDOWSDESKTOP_ROOT%en
     -platform %ARCHITECTURE% ^
     -restore ^
     -projects "%DESKTOP_RUNTIME%" ^
-    /p:VersionSuffix=sse2 ^
+    /p:VersionSuffix=%VERSION_SUFFIX% ^
     /p:MicrosoftNETCoreAppRefPackageVersion=%PACKAGE_VERSION% ^
     /p:MicrosoftNETCoreAppRefVersion=%PACKAGE_VERSION% ^
     /p:RestoreAdditionalProjectSources=%LOCAL_FEED%
@@ -79,7 +102,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%WINDOWSDESKTOP_ROOT%en
     -platform %ARCHITECTURE% ^
     -restore -build -pack ^
     -projects "%DESKTOP_BUNDLE%" ^
-    /p:VersionSuffix=sse2 ^
+    /p:VersionSuffix=%VERSION_SUFFIX% ^
     /p:MicrosoftNETCoreAppRefPackageVersion=%PACKAGE_VERSION% ^
     /p:MicrosoftNETCoreAppRefVersion=%PACKAGE_VERSION% ^
     /p:RestoreAdditionalProjectSources=%LOCAL_FEED% ^
@@ -87,14 +110,43 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%WINDOWSDESKTOP_ROOT%en
     /p:RuntimePrereqDownloadDirectory=%LOCAL_FEED%\
 if errorlevel 1 exit /b %ERRORLEVEL%
 
-call :RequireDesktopArtifact "windowsdesktop-runtime-%PACKAGE_VERSION%-win-x64.msi" || exit /b 1
-call :RequireDesktopArtifact "windowsdesktop-runtime-%PACKAGE_VERSION%-win-x64.exe" || exit /b 1
+call :RequireDesktopArtifact "windowsdesktop-runtime-%PACKAGE_VERSION%-win-%ARCHITECTURE%.msi" || exit /b 1
+call :RequireDesktopArtifact "windowsdesktop-runtime-%PACKAGE_VERSION%-win-%ARCHITECTURE%.exe" || exit /b 1
 
 echo.
 echo Custom Windows Desktop Runtime build completed successfully.
-echo MSI    : %DESKTOP_SHIPPING%\windowsdesktop-runtime-%PACKAGE_VERSION%-win-x64.msi
-echo Bundle : %DESKTOP_SHIPPING%\windowsdesktop-runtime-%PACKAGE_VERSION%-win-x64.exe
+echo MSI    : %DESKTOP_SHIPPING%\windowsdesktop-runtime-%PACKAGE_VERSION%-win-%ARCHITECTURE%.msi
+echo Bundle : %DESKTOP_SHIPPING%\windowsdesktop-runtime-%PACKAGE_VERSION%-win-%ARCHITECTURE%.exe
 exit /b 0
+
+:ReadProductVersion
+rem Read MajorVersion/MinorVersion/PatchVersion from the eng\Versions.props of the
+rem checkout named by VERSIONS_PROPS and expose the result as PRODUCT_VERSION.
+if not exist "%VERSIONS_PROPS%" (
+    echo ERROR: Version file was not found: %VERSIONS_PROPS%
+    exit /b 1
+)
+set "PRODUCT_VERSION="
+for /f "usebackq delims=" %%v in (`powershell.exe -NoProfile -NonInteractive -Command "$g=([xml](Get-Content -Raw -LiteralPath '%VERSIONS_PROPS%')).Project.PropertyGroup; '{0}.{1}.{2}' -f @($g.MajorVersion)[0],@($g.MinorVersion)[0],@($g.PatchVersion)[0]"`) do set "PRODUCT_VERSION=%%v"
+echo %PRODUCT_VERSION%| findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul
+if errorlevel 1 (
+    echo ERROR: Could not read MajorVersion, MinorVersion and PatchVersion from:
+    echo        %VERSIONS_PROPS%
+    echo        Read value: "%PRODUCT_VERSION%"
+    exit /b 1
+)
+exit /b 0
+
+:RequireCrossgen2
+rem Crossgen2 is a build-time compiler. Depending on the runtime build layout it
+rem is published for the target RID or for the x64 build host, so accept either.
+if exist "%LOCAL_FEED%\Microsoft.NETCore.App.Crossgen2.win-%ARCHITECTURE%.%PACKAGE_VERSION%.nupkg" exit /b 0
+if exist "%LOCAL_FEED%\Microsoft.NETCore.App.Crossgen2.win-x64.%PACKAGE_VERSION%.nupkg" exit /b 0
+echo ERROR: Required custom runtime artifact was not found:
+echo        %LOCAL_FEED%\Microsoft.NETCore.App.Crossgen2.win-%ARCHITECTURE%.%PACKAGE_VERSION%.nupkg
+echo        %LOCAL_FEED%\Microsoft.NETCore.App.Crossgen2.win-x64.%PACKAGE_VERSION%.nupkg
+echo Run build-local-runtime-sse2.cmd first.
+exit /b 1
 
 :RequireRuntimeArtifact
 if not exist "%LOCAL_FEED%\%~1" (
